@@ -1,0 +1,66 @@
+import torch
+import torch.nn as nn
+import pretrainedmodels
+
+# Define SE modules
+class SEModule(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(SEModule, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc1 = nn.Conv2d(channels, channels // reduction, kernel_size=1, padding=0)
+        self.relu = nn.ReLU(inplace=True)
+        self.fc2 = nn.Conv2d(channels // reduction, channels, kernel_size=1, padding=0)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        module_input = x
+        x = self.avg_pool(x)
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        x = self.sigmoid(x)
+        return module_input * x
+# An Inception-ResNetV2 model with SE module and Dropout layer was defined
+class InceptionResNetV2SE(nn.Module):
+    def __init__(self, num_classes=1, pretrained='imagenet', dropout_prob=0.5):
+        super(InceptionResNetV2SE, self).__init__()
+        self.model = pretrainedmodels.__dict__['inceptionresnetv2'](pretrained=pretrained)
+        
+        # Add the SE module to the middle layer of Inception-ResNet
+        self.model.mixed_5b.add_module('se_module', SEModule(channels=320))
+        self.model.mixed_6a.add_module('se_module', SEModule(channels=1088))
+        self.model.mixed_7a.add_module('se_module', SEModule(channels=2080))
+        
+        # The last layer was replaced to accommodate the binary classification task
+        in_features = self.model.last_linear.in_features
+        self.model.last_linear = nn.Sequential(
+            nn.Dropout(p=dropout_prob),
+            nn.Linear(in_features, num_classes)
+        )
+        
+    def forward(self, x):
+        x = self.model.conv2d_1a(x)
+        x = self.model.conv2d_2a(x)
+        x = self.model.conv2d_2b(x)
+        x = self.model.maxpool_3a(x)
+        x = self.model.conv2d_3b(x)
+        x = self.model.conv2d_4a(x)
+        x = self.model.maxpool_5a(x)
+        
+        x = self.model.mixed_5b(x)  
+        x = self.model.mixed_5b.se_module(x)  
+        x = self.model.mixed_6a(x)  
+        x = self.model.mixed_6a.se_module(x)  
+        x = self.model.repeat_1(x)  
+        x = self.model.mixed_7a(x)  
+        x = self.model.mixed_7a.se_module(x)  
+        x = self.model.repeat_2(x)  
+
+        x = self.model.conv2d_7b(x)
+        x = self.model.avgpool_1a(x)
+        x = torch.flatten(x, 1)
+        x = self.model.last_linear(x)  
+        return x
+
+# Create a new fused model instance
+model = InceptionResNetV2SE(num_classes=1, pretrained='imagenet', dropout_prob=0.3)
